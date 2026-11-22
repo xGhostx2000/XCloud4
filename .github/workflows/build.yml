@@ -1,0 +1,106 @@
+name: Build XCloud4 (Xbox One)
+
+# Compila o XCloud4 (edicao publica) com a identidade "Microsoft / Xbox One"
+# em vez de "Sony / PS4". O .pkg final fica em Artifacts, no fim da execucao.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      XC: ${{ github.workspace }}/.xc
+    steps:
+      - name: Obter o codigo
+        uses: actions/checkout@v4
+
+      - name: Mudar a identidade para Xbox One
+        run: |
+          python3 - <<'PY'
+          files = [
+              "src/streaming/stream_profile.h",
+              "src/streaming/stream_profile.c",
+              "src/auth/xbox_live.c",
+          ]
+          for f in files:
+              b = open(f, "rb").read().decode()
+              n = b.replace('make\\":\\"Sony', 'make\\":\\"Microsoft')
+              n = n.replace('model\\":\\"PS4', 'model\\":\\"Xbox One')
+              if n == b:
+                  raise SystemExit("Nada para alterar em " + f + " (ja alterado ou codigo diferente)")
+              open(f, "wb").write(n.encode())
+              print("alterado:", f)
+          PY
+          git diff --stat
+          grep -rn 'Xbox One' src/streaming/stream_profile.h src/streaming/stream_profile.c src/auth/xbox_live.c | cut -c1-140
+
+      - name: Instalar ferramentas do sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential make cmake ninja-build git python3 curl wget \
+            ca-certificates pkg-config unzip xxd binutils lsb-release \
+            software-properties-common gnupg
+
+      - name: Instalar LLVM/Clang 21
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21 all
+          mkdir -p "$HOME/.local/share/xcloud4/bin"
+          for t in clang clang++ ld.lld llc llvm-objdump llvm-objcopy; do
+            if [ -x "/usr/lib/llvm-21/bin/$t" ]; then
+              ln -sf "/usr/lib/llvm-21/bin/$t" "$HOME/.local/share/xcloud4/bin/$t"
+            fi
+          done
+          "$HOME/.local/share/xcloud4/bin/clang" --version | head -1
+
+      - name: Instalar o toolchain OpenOrbis v0.5.4
+        run: |
+          mkdir -p "$HOME/.local/share/xcloud4"
+          cd "$HOME/.local/share/xcloud4"
+          curl --fail --location -o tc.tar.gz \
+            https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/v0.5.4/toolchain-llvm-18.tar.gz
+          echo "3c7cd5bb593ca74fa1c13fd59f3938dc0fc07985167f7275063019e63abe4526  tc.tar.gz" | sha256sum --check --strict
+          tar xzf tc.tar.gz
+          rm tc.tar.gz
+          chmod +x OpenOrbis/PS4Toolchain/bin/linux/* || true
+          # Modulos de runtime (formato SELF) que vem no proprio toolchain
+          mkdir -p runtime/sdk-v0.5.4
+          cp OpenOrbis/PS4Toolchain/samples/hello_world/sce_module/libc.prx runtime/sdk-v0.5.4/
+          cp OpenOrbis/PS4Toolchain/samples/hello_world/sce_module/libSceFios2.prx runtime/sdk-v0.5.4/
+          xxd -l 4 runtime/sdk-v0.5.4/libc.prx
+
+      - name: Preparar o empacotador (OpenSSL 1.1 isolado)
+        run: bash scripts/preparar-empaquetador.sh
+
+      - name: Compilar as bibliotecas (WebRTC, Mbed TLS, Opus)
+        run: |
+          export OO_PS4_TOOLCHAIN="$HOME/.local/share/xcloud4/OpenOrbis/PS4Toolchain"
+          export PATH="$HOME/.local/share/xcloud4/bin:$OO_PS4_TOOLCHAIN/bin/linux:$PATH"
+          bash scripts/webrtc/build_native.sh
+
+      - name: Compilar e empacotar o XCloud4
+        run: |
+          export OO_PS4_TOOLCHAIN="$HOME/.local/share/xcloud4/OpenOrbis/PS4Toolchain"
+          export PATH="$HOME/.local/share/xcloud4/bin:$OO_PS4_TOOLCHAIN/bin/linux:$PATH"
+          export X4_RUNTIME_MODULES="$HOME/.local/share/xcloud4/runtime/sdk-v0.5.4"
+          rm -rf build dist
+          make -j"$(nproc)" X4_RECEIVER_NACK=1 X4_NACK_GRACE_MS=45 X4_RUMBLE=1 \
+            X4_INGRESS_MODE=mpsc X4_VIDEO_CAPACITY_1080=1 X4_VIDEO_PROBE=0 \
+            X4_STREAM_PROFILE=1 X4_PUBLIC=1 all
+          X4_PACKAGE_MODE=public X4_STREAM_PROFILE=1 X4_PUBLIC=1 \
+            bash scripts/empaquetar.sh
+          python3 scripts/package_identity.py verify --mode public
+          ls -la dist
+
+      - name: Guardar o pacote
+        uses: actions/upload-artifact@v4
+        with:
+          name: XCloud4-XboxOne-pkg
+          path: |
+            dist/*.pkg
+            dist/*.sha256
+          if-no-files-found: error
