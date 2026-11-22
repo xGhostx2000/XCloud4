@@ -84,17 +84,41 @@ jobs:
 
       - name: Compilar e empacotar o XCloud4
         run: |
+          LOG="$RUNNER_TEMP/build.log"
+          cat > "$RUNNER_TEMP/build.sh" <<'EOS'
+          set -Eeuo pipefail
           export OO_PS4_TOOLCHAIN="$HOME/.local/share/xcloud4/OpenOrbis/PS4Toolchain"
           export PATH="$HOME/.local/share/xcloud4/bin:$OO_PS4_TOOLCHAIN/bin/linux:$PATH"
           export X4_RUNTIME_MODULES="$HOME/.local/share/xcloud4/runtime/sdk-v0.5.4"
           rm -rf build dist
-          make -j"$(nproc)" X4_RECEIVER_NACK=1 X4_NACK_GRACE_MS=45 X4_RUMBLE=1 \
+          make -j2 X4_RECEIVER_NACK=1 X4_NACK_GRACE_MS=45 X4_RUMBLE=1 \
             X4_INGRESS_MODE=mpsc X4_VIDEO_CAPACITY_1080=1 X4_VIDEO_PROBE=0 \
             X4_STREAM_PROFILE=1 X4_PUBLIC=1 all
           X4_PACKAGE_MODE=public X4_STREAM_PROFILE=1 X4_PUBLIC=1 \
             bash scripts/empaquetar.sh
           python3 scripts/package_identity.py verify --mode public
           ls -la dist
+          EOS
+          set +e
+          bash "$RUNNER_TEMP/build.sh" 2>&1 | tee "$LOG"
+          RC=${PIPESTATUS[0]}
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            # Mostra as linhas de erro como anotacao publica
+            ERR=$(grep -nE 'error|\*\*\*|No rule|undefined reference|cannot find|Falta|Missing|Unexpected' "$LOG" | head -12 | cut -c1-300 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            LAST=$(tail -n 8 "$LOG" | cut -c1-300 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=Erros::${ERR}"
+            echo "::error title=Ultimas linhas::${LAST}"
+            exit "$RC"
+          fi
+
+      - name: Guardar o registo se falhou
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: registo-de-erro
+          path: ${{ runner.temp }}/build.log
+          if-no-files-found: ignore
 
       - name: Guardar o pacote
         uses: actions/upload-artifact@v4
