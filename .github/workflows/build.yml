@@ -91,6 +91,16 @@ jobs:
           export PATH="$HOME/.local/share/xcloud4/bin:$OO_PS4_TOOLCHAIN/bin/linux:$PATH"
           export X4_RUNTIME_MODULES="$HOME/.local/share/xcloud4/runtime/sdk-v0.5.4"
           rm -rf build dist
+          # A chave publica de atualizacoes do autor nao esta no repositorio.
+          # Usamos uma chave propria descartavel: a app deixa de aceitar
+          # atualizacoes pela propria app (nao queremos que reponham a original).
+          mkdir -p build/update src/update
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$RUNNER_TEMP/k.pem"
+          openssl pkey -in "$RUNNER_TEMP/k.pem" -pubout -out "$RUNNER_TEMP/own_pub.pem"
+          printf 'placeholder\n' > src/update/release_pubkey.pem
+          touch -d '2000-01-01' src/update/release_pubkey.pem
+          python3 tools/embed_update_pubkey.py "$RUNNER_TEMP/own_pub.pem" build/update/pubkey51.h
+          rm -f "$RUNNER_TEMP/k.pem"
           make -j2 X4_RECEIVER_NACK=1 X4_NACK_GRACE_MS=45 X4_RUMBLE=1 \
             X4_INGRESS_MODE=mpsc X4_VIDEO_CAPACITY_1080=1 X4_VIDEO_PROBE=0 \
             X4_STREAM_PROFILE=1 X4_PUBLIC=1 all
